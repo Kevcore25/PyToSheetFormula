@@ -1,20 +1,31 @@
+VERSION = 1.1
+
 import ast, logging, time
 from typing import *
 
 """ CONFIG """
-
-# Turn on debug mode, which prints some messages for developing
-DEBUG = False
 
 # When turned on, if multiple expressions exist, it will choose the first expression which is non-empty and not false. 
 # Otherwise, it will default to choosing the last expression used.
 # Regardless of this option, a warning will be displayed if multiple values exist.
 USE_FIRST_VALID = True
 
+# When turned on, some custom functions (such as endswith) which use the same expressions multiple times will use the LET function to condense the formula.
+# Typically, it can help shorten complex formulas without breaking it, but may not be as useful for simple ones.
+# However, it may cause issues if you use your own LET expressions with the same variable names.
+USE_LET_SHORTENS = True
+
+# When turned on, variable assignments will use the LET function.
+# Otherwise, it will simply substitude the variable with its expression.
+# Depending on the usage, this may increase the size of your formula, so by default, it is turned off.
+# Additionally, it may create conflicts if USE_LET_SHORTENS is on, or if you use the custom LET function.
+# This setting is mainly useful only if you plan to edit variables afterwards.
+VAR_AS_LET = False
+
 # In Google sheets, numbers, even if they are text, are numbers.
-# This converts all user-defined strings (e.g. "123", "-1234.5") automatically into numbers if possible.
-# This also saves characters, but may cause some issues on certain functions.
-# When possible, this should be ideally turned on as some built-in attribute functions are designed with this in mind.
+# This converts all user-defined strings (e.g. "123", "-1234.5") automatically into numbers when possible.
+# Unless you need specifically need to force strings, this should be left on.
+# If turned off, some built-in attribute functions may not function properly.
 CONVERT_NUM_TO_STR = True
 
 # Google Sheet uses indexes that start at 1 instead of 0
@@ -27,10 +38,14 @@ RETURN_SHEET_INDEXES = True
 # When turned on, all user-defined indexes will be adjusted to the Google Sheet system.
 # By default to prevent confusion, this option is turned off.
 # Note that when turned on, it may cause issues with negative indices (e.g. A1[1:-1] is now A1[0:-2] and A1[0] is now A1[-1]) 
+# The step slice (e.g. [::-1]) is not affected.
 USE_SHEET_INDEXES = False
 
-# Character for empty
+# Character used for empty expressions
 EMPTY = '""'
+
+# Turn on debug mode, which prints some messages for developing
+DEBUG = False
 
 """ END OF CONFIG """
 
@@ -39,6 +54,7 @@ log = logging.getLogger()
 
 if DEBUG:
     log.setLevel(logging.DEBUG)
+
 def convert_condition_astobj(op: ast.operator) -> str:
     """
     Converts an ast object of an operator type (e.g. <) into its string value
@@ -81,6 +97,68 @@ try:
 except Exception as e:
     log.error(f"An error occurred while compiling functions: {e}\nPre-built functions may not be available")
 
+def _is_bound_char(c: str) -> bool:
+    """Identifies characters that belong to variable names, functions, or cell ranges."""
+    return c.isalnum() or c in '_$'
+
+def _get_subchar(index: int) -> _get_subchar:
+    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    result = ''
+    if index >= 26:
+        result += _get_subchar(index // 26 - 1)
+
+    result += chars[index % 26]
+
+    return result
+
+
+def shorten_formula(formula: str, index: int = 0) -> str:
+    """
+    Shortens the formula where possible
+    """
+
+    # IF(SUBSTUTITE(A1," ","")=A1,SUBSTUTITE(A1," ",""),A1)
+    # LET(A,SUBSTUTITE(A1," ",""),A=A1,A,A1)
+    # LET(A,SUBSTUTITE(A1," ",""),B,A1,A=B,A,B)
+
+    # Get expressions
+    expressions = []
+    inStr = False
+    temp = []
+    lbrac = 0
+    for i, t in enumerate(formula):
+        t = formula[i]
+        if t == '"' and (i > 0 and t[i-1] != '\\'):
+            inStr = not inStr
+
+        if lbrac > 0:
+            temp.append(i)
+            if t == '(':
+                lbrac += 1
+
+            if t == ')': 
+                lbrac -= 1
+                if lbrac == 0:
+                    expr = ''.join(temp)
+                    expressions.append(expr)
+                    temp.clear()
+
+        elif not inStr:
+            match t:
+                case '(':
+                    lbrac = 1
+                    temp.clear()
+
+                case ')' | ',':
+                    if len(temp) > 0:
+                        expr = ''.join(temp)
+                        expressions.append(expr)
+                        temp.clear()
+
+                case _:
+                    temp.append(t)
+        
+
 class PyToSheetFormula:
     """
     Converts Python code (specifically, expressions) into a Google Sheet formula
@@ -105,14 +183,20 @@ class PyToSheetFormula:
         
     def convert_indices(self, value: str, start: str = None, end: str = None):
         """Converts indices into a MID() format"""
-        if start.isdigit():
-            start = int(start)
-            if USE_SHEET_INDEXES:
-                start -= 1
-        if end.isdigit():
-            end = int(end)
-            if USE_SHEET_INDEXES:
-                end -= 1
+        try:
+            if start:
+                start = int(start)
+                if USE_SHEET_INDEXES:
+                    start -= 1
+        except ValueError:
+            pass
+        try:
+            if end:
+                end = int(end)
+                if USE_SHEET_INDEXES:
+                    end -= 1
+        except ValueError:
+            pass
 
         self.level += 1
         self.debug(f"Convert indice string: {value}[{start}:{end}]", 'code', 'getindex')
@@ -122,16 +206,16 @@ class PyToSheetFormula:
         if start is None:
             p_start = "1"
         elif isinstance(start, int):
-            p_start = str(start + 1) if start >= 0 else f"{LEN_TEXT} {start + 1:+d}".replace("+0", "")
+            p_start = str(start + 1) if start >= 0 else f"{LEN_TEXT}{start + 1:+d}".replace("+0", "")
         else:
             p_start = f"IF({start}<0,{LEN_TEXT}+{start}+1,{start}+1)"
 
         if end is None:
             p_end = f"{LEN_TEXT} + 1"
         elif isinstance(end, int):
-            p_end = str(end + 1) if end >= 0 else f"{LEN_TEXT} {end + 1:+d}".replace("+0", "")
+            p_end = str(end + 1) if end >= 0 else f"{LEN_TEXT}{end + 1:+d}".replace("+0", "")
         else:
-            p_end = f"IF({end}<0, {LEN_TEXT}+{end}+1,{end}+1)"
+            p_end = f"IF({end}<0,{LEN_TEXT}+{end}+1,{end}+1)"
 
         if isinstance(start, int) and isinstance(end, int) and start >= 0 and end >= 0:
             length = str(max(0, end - start))
@@ -210,7 +294,10 @@ class PyToSheetFormula:
         """
         Get the integer value of an ast obj.
         If it is negative it uses UnaryOp so this fixes it.
+        Note that this only allows numbers, not any cell references. 
+        Thus, this function should be avoided if possible.
         """
+
         if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, ast.USub):
             return -expression.operand.value
         elif isinstance(expression, ast.UnaryOp) and isinstance(expression.op, ast.UAdd):
@@ -222,7 +309,12 @@ class PyToSheetFormula:
     def get_value(self, expression: ast.Constant | ast.Name | ast.Call | ast.BinOp | str|int|float, noStrQuotes: bool = False) -> str:
         """Gets a value, which can be a cell, a standard value, etc"""
         self.level += 1
-        self.debug(ast.dump(expression), 'expr', 'getval', expr=expression)
+
+        if isinstance(expression, ast.stmt):
+            self.debug(ast.dump(expression), 'expr', 'getval', expr=expression)
+        else:
+            self.debug(str(expression), 'code', 'getval')
+
         result = self.get_straight_value(expression, noStrQuotes)
         self.debug(result, 'result', 'getval', expr=expression)
         self.level -= 1
@@ -267,7 +359,18 @@ class PyToSheetFormula:
             else:
                 return str(expression.value).upper()
         elif isinstance(expression, ast.UnaryOp):
-            return str(self.get_int(expression))
+            # Test AND, NOT, OR
+            if isinstance(expression.op, (ast.Not, ast.And, ast.Or)): 
+                if isinstance(expression.op, ast.Not): kw = 'NOT'
+                elif isinstance(expression.op, ast.And): kw = 'AND'
+                elif isinstance(expression.op, ast.Or): kw = 'OR'
+
+                return f"{kw}({self.get_value(expression.operand)})"
+            if isinstance(expression.op, ast.USub):
+               return '-' + self.get_value(expression.operand)
+            if isinstance(expression.op, ast.USub):
+               return '+' + self.get_value(expression.operand)
+            
         elif isinstance(expression, ast.JoinedStr):
             values = []
             for expr in expression.values:
@@ -277,11 +380,47 @@ class PyToSheetFormula:
                     values.append(self.get_value(expr))
             return '&'.join(values)
 
-        elif isinstance(expression, ast.Name):
-            if expression.id.startswith('_') and expression.id in self.labels:
-                return self.labels[expression.id]
+        elif isinstance(expression, ast.Subscript):
+            # Get slice
+            value = self.get_value(expression.value)
 
-            if expression.id in self.vars:
+            # Range
+            if isinstance(expression.slice, ast.Slice):
+                lower = self.get_value(expression.slice.lower, noStrQuotes=True) if expression.slice.lower else None
+                upper = self.get_value(expression.slice.upper, noStrQuotes=True) if expression.slice.upper else None
+                value = self.convert_indices(value, lower, upper)
+
+                # Check step 
+                if expression.slice.step:
+                    step = self.get_value(expression.slice.step, noStrQuotes=True)
+                    L = f"LEN({value})"
+                    try:
+                        step = int(step)
+
+                        if step == 0:
+                            self.raise_warning("Slice step cannot be zero", ast.unparse(expression.slice))
+                            
+                        s_expr = "1" if step > 0 else L
+                        c_expr = f"ROUNDUP({L}/{abs(step)})"
+                    except ValueError:
+                        s_expr = f"IF({step}>0,1,{L})"
+                        c_expr = f"ROUNDUP({L}/ABS({step}))"
+
+                    if USE_LET_SHORTENS:
+                        value = f"LET(c,{c_expr},IF(c=0,\"\",ARRAYFORMULA(JOIN(\"\",MID({value},SEQUENCE(c,1,{s_expr},{step}),1)))))"
+                    else:
+                        value = f"IF({c_expr}=0,\"\",ARRAYFORMULA(JOIN(\"\",MID({value},SEQUENCE({c_expr},1,{s_expr},{step}),1))))"
+
+                return value    
+            else: # Single index
+                v = self.get_value(expression.slice, noStrQuotes=True)
+                try:
+                    return f"MID({value},{int(v) + (1 if not USE_SHEET_INDEXES else 0)},1)"
+                except ValueError:
+                    return f"MID({value},{v}{'+1' if not USE_SHEET_INDEXES else ''},1)"
+
+        elif isinstance(expression, ast.Name):
+            if expression.id in self.vars and not VAR_AS_LET:
                 return self.vars[expression.id]
             
             return expression.id
@@ -304,26 +443,26 @@ class PyToSheetFormula:
         # Formula: IF(condition, truecode, falsecode)
         self.tempformula = self.currentFormula
         if isinstance(expression.test, ast.Compare):
-            temp = 'IF('
+            result = 'IF('
 
             # Condition
-            temp2 = [] 
+            temp = [] 
             for i in range(len(expression.test.ops)):
-                temp2.append( 
+                temp.append( 
                     self.get_value(expression.test.left) + convert_condition_astobj(expression.test.ops[i]) + self.get_value(expression.test.comparators[i])
                 )
-            if len(temp2) == 1:
-                temp += temp2[0]
+            if len(temp) == 1:
+                result += temp[0]
             else:
-                temp += 'AND(' + ','.join(temp2) + ')'
+                result += 'AND(' + ','.join(temp) + ')'
 
             # True code
-            temp += ',' + (self.parse_list(expression.body, LN) or EMPTY)
+            result += ',' + (self.parse_list(expression.body, LN) or EMPTY)
 
             # False code
-            temp += ',' + (self.parse_list(expression.orelse, LN) or EMPTY)
+            result += ',' + (self.parse_list(expression.orelse, LN) or EMPTY)
 
-            return temp + ')'
+            return result + ')'
         else:
             return f'IF({self.get_value(expression.test)},{self.parse_list(expression.body, LN) or EMPTY},{self.parse_list(expression.orelse, LN) or EMPTY})'
             
@@ -342,8 +481,13 @@ class PyToSheetFormula:
             elif isinstance(expression, ast.If):
                 return self.ifexpr(expression)
 
-            elif isinstance(expression, ast.Assign):
-                for target in expression.targets:
+            elif isinstance(expression, (ast.Assign, ast.AnnAssign)):
+                if isinstance(expression, ast.Assign):
+                    targets = expression.targets
+                else:
+                    targets = (expression.target, )
+
+                for target in targets:
                     self.vars[target.id] = self.get_value(expression.value)
                     self.debug(f"LABEL {target.id} = {self.get_value(expression.value)}", 'code', levelName, expr=expression)
 
@@ -378,7 +522,7 @@ class PyToSheetFormula:
             if number:
                 return self.get_int(args[index])
             
-            if default and index >= len(args):
+            if index >= len(args):
                 return default
             
             return self.get_value(args[index], noStrQuotes)
@@ -450,11 +594,15 @@ class PyToSheetFormula:
                         return f"ISTEXT({root}))"
 
                     case 'count':
-                        if len(args) == 1:
-                            return f"LEN({root})-LEN(SUBSTITUTE({root},{get_arg('sub', 0)},\"\"))"
-                        elif 2 <= len(args) <= 3:
-                            root = self.convert_indices(root, get_arg('start', 1), get_arg('end', 2))
-                            return f"LEN({root})-LEN(SUBSTITUTE({root},{get_arg('sub', 0)},\"\"))"
+                        if 1 <= len(args) <= 3:
+                            if 2 <= len(args) <= 3:
+                                root = self.convert_indices(root, get_arg('start', 1), get_arg('end', 2))
+
+                            if USE_LET_SHORTENS:
+                                return f"LET(s,{root},LEN(s)-LEN(SUBSTITUTE(s,{get_arg('sub', 0)},\"\")))"
+                            else:
+                                return f"LEN({root})-LEN(SUBSTITUTE({root},{get_arg('sub', 0)},\"\"))"
+                                
                     case 'startswith' | 'endswith':
                         # Argument MAY be a tuple
                         result = []
@@ -471,9 +619,10 @@ class PyToSheetFormula:
                             for p in prefixes:
                                 if name == 'startswith':
                                     result.append(f"IFERROR(SEARCH({self.get_value(p)},{root})=1,FALSE)")
+                                elif USE_LET_SHORTENS:
+                                    result.append(f"LET(s,{root},p,{self.get_value(p)},IFERROR(SEARCH(p,s)=LEN(s)-LEN(p)+1,FALSE))")
                                 else:
                                     result.append(f"IFERROR(SEARCH({self.get_value(p)},{root})=LEN({root})-LEN({self.get_value(p)})+1,FALSE)")
-
                             if len(result) == 1:
                                 return result[0]
                             else:
@@ -497,7 +646,10 @@ class PyToSheetFormula:
                             char = '" "' if len(args) == 1 else get_arg('fillchar', 1)
                             width = get_arg('width', 0)
 
-                            return f"IF({width}<=LEN({root}),{root},REPT({char},FLOOR(({width}-LEN({root}))/2))&{root}&REPT({char},({width}-LEN({root})-FLOOR(({width}-LEN({root}))/2))))"
+                            if USE_LET_SHORTENS:
+                                return f"LET(s,{root},l,LEN(s),w,{width},h,FLOOR((w-l)/2),IF(w<=l,s,REPT({char},h)&s&REPT({char},w-l-h)))"
+                            else:
+                                return f"IF({width}<=LEN({root}),{root},REPT({char},FLOOR(({width}-LEN({root}))/2))&{root}&REPT({char},({width}-LEN({root})-FLOOR(({width}-LEN({root}))/2))))"
 
                     case _:
                         self.raise_warning(f"Attribute '{name}' is not recognized/supported", ast.unparse(expression))
@@ -517,9 +669,9 @@ class PyToSheetFormula:
                 match name:
                     case 'CELL':
                         if len(args) == 1:
-                            return get_arg('letter_OR_cell_as_str', 0).upper()
+                            return get_arg('letter_OR_cell_as_str', 0, noStrQuotes=True).upper()
                         if len(args) == 2:
-                            return get_arg('letter_OR_cell_as_str', 0).upper() + str(int(get_arg('index', 1, True))) # Use int() for type check
+                            return get_arg('letter_OR_cell_as_str', 0, noStrQuotes=True).upper() + str(int(get_arg('index', 1, True))) # Use int() for type check
                     case 'CELLRANGE':
                         if len(args) == 2:
                             return get_arg('start', 0, noStrQuotes=True) + ':' + get_arg('end', 1, noStrQuotes=True)
@@ -647,16 +799,81 @@ class PyToSheetFormula:
                 self.raise_warning("There are multiple expressions in this code. Only the last one will be chosen.", ast.unparse(expressions[0]))
         return results[-1]
 
-        
+    def verify_formula(self, formula: str, noPrint: bool = False) -> bool:
+        """Although this script cannot run a simulation, this function does basic syntax checks to ensure it works"""
+        passed = True
+
+        def warn(msg: str):
+            nonlocal passed
+            if not noPrint:
+                self.raise_warning(msg)
+            passed = False
+
+        # Do a bracket check
+        lbrac = 0
+        inStr = False
+
+        TOTAL_FUNCTIONS = set(FUNCTIONS.keys()) | {"CELL", "CELLRANGE", "CELLREF", "FIXEDCELL"}
+        INVALID_CHARS = "(,{[|\\._-+=*&^%$#@!`~?/<>:;'" 
+        tempfunc = []
+        formula = formula.lstrip('=')
+        try:
+            for i, t in enumerate(formula):
+                if t == '"':
+                    inStr = not inStr
+
+                if not inStr:
+                    if t == '(':
+                        lbrac += 1
+                        # Check function - a previous function already checks this but this verifies it again
+                        func = ''.join(tempfunc)
+                        if func not in TOTAL_FUNCTIONS and not func.isspace() and func != '':
+                            warn(f"Function '{func}' is not recognized.")
+                        
+                        tempfunc.clear()
+
+                        # Check (,
+                        if formula[i-1] == ',':
+                            warn(f"Argument invalid at position {i}")
+
+                    elif t == ')':
+                        lbrac -= 1
+                        # Check for ,)
+                        if formula[i-1] in INVALID_CHARS:
+                            warn(f"Incorrect ending character '{formula[i-1]}' at position {i}")
+                    elif t == ',':
+                        tempfunc.clear()
+
+        except IndexError:
+            warn("Unable to parse through the formula due to an index error - the formula is likely broken.")
+
+
+        # Check brackets
+        if lbrac != 0:
+            warn("Final formula bracket mismatch. Your formula may not run properly.")
+
+        if not noPrint:
+            if passed:
+                self.debug('All post-formula verification checks passed.', 'msg', 'verify')
+            else:
+                self.debug('There are some checks that failed. Check the warning logs for details.', 'msg', 'verify')
+
+        return passed
 
     def build(self) -> str:
         """Starts the build process and returns the final output"""
         self.debug('Parsing code', 'msg', 'setup')
         parsed = ast.parse(self.code).body
-        return '=' + (self.parse_list(parsed, 'root') or EMPTY)
 
+        result = self.parse_list(parsed, 'root') or EMPTY
+
+        # Var as let
+        if VAR_AS_LET:
+            result = "LET(" + ','.join(f'{k},{v}' for k,v in self.vars.items()) + ',' + result + ')'
         
-        
+        return '=' + result
+
+
 
         
 if "__main__" in __name__:
@@ -665,5 +882,6 @@ if "__main__" in __name__:
 
     c = PyToSheetFormula(code)
     result = c.build()
+    c.verify_formula(result)
     c.print_warnings()
     print(result)
