@@ -96,69 +96,6 @@ try:
                 FUNCTIONS[expr.name] = args
 except Exception as e:
     log.error(f"An error occurred while compiling functions: {e}\nPre-built functions may not be available")
-
-def _is_bound_char(c: str) -> bool:
-    """Identifies characters that belong to variable names, functions, or cell ranges."""
-    return c.isalnum() or c in '_$'
-
-def _get_subchar(index: int) -> _get_subchar:
-    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    result = ''
-    if index >= 26:
-        result += _get_subchar(index // 26 - 1)
-
-    result += chars[index % 26]
-
-    return result
-
-
-def shorten_formula(formula: str, index: int = 0) -> str:
-    """
-    Shortens the formula where possible
-    """
-
-    # IF(SUBSTUTITE(A1," ","")=A1,SUBSTUTITE(A1," ",""),A1)
-    # LET(A,SUBSTUTITE(A1," ",""),A=A1,A,A1)
-    # LET(A,SUBSTUTITE(A1," ",""),B,A1,A=B,A,B)
-
-    # Get expressions
-    expressions = []
-    inStr = False
-    temp = []
-    lbrac = 0
-    for i, t in enumerate(formula):
-        t = formula[i]
-        if t == '"' and (i > 0 and t[i-1] != '\\'):
-            inStr = not inStr
-
-        if lbrac > 0:
-            temp.append(i)
-            if t == '(':
-                lbrac += 1
-
-            if t == ')': 
-                lbrac -= 1
-                if lbrac == 0:
-                    expr = ''.join(temp)
-                    expressions.append(expr)
-                    temp.clear()
-
-        elif not inStr:
-            match t:
-                case '(':
-                    lbrac = 1
-                    temp.clear()
-
-                case ')' | ',':
-                    if len(temp) > 0:
-                        expr = ''.join(temp)
-                        expressions.append(expr)
-                        temp.clear()
-
-                case _:
-                    temp.append(t)
-        
-
 class PyToSheetFormula:
     """
     Converts Python code (specifically, expressions) into a Google Sheet formula
