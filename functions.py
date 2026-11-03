@@ -1052,7 +1052,7 @@ def CHISQ_TEST(observed_range: Range | Cell[Range], expected_range: Range | Cell
     '''See CHITEST'''
 
 def CHITEST(observed_range: Range | Cell[Range], expected_range: Range | Cell[Range]):
-    '''Returns the probability associated with a Pearson’s chi-squared test on the two ranges of data. Determines the likelihood that the observed categorical data is drawn from an expected distribution.'''
+    '''Returns the probability associated with a Pearsons chi-squared test on the two ranges of data. Determines the likelihood that the observed categorical data is drawn from an expected distribution.'''
 
 def CONFIDENCE(alpha: Any, standard_deviation: PercentFloat | Cell[PercentFloat], pop_size: Any):
     '''See CONFIDENCE.NORM'''
@@ -1061,7 +1061,7 @@ def CONFIDENCE_NORM(alpha: Any, standard_deviation: PercentFloat | Cell[PercentF
     '''Calculates the width of half the confidence interval for a normal distribution.'''
 
 def CONFIDENCE_T(alpha: Any, standard_deviation: PercentFloat | Cell[PercentFloat], size: Any):
-    '''Calculates the width of half the confidence interval for a Student’s t-distribution.'''
+    '''Calculates the width of half the confidence interval for a Studentï¿½s t-distribution.'''
 
 def CORREL(data_y: Range | Cell[Range], data_x: Range | Cell[Range]):
     '''Calculates r, the Pearson product-moment correlation coefficient of a dataset.'''
@@ -1100,10 +1100,10 @@ def F_DIST_RT(x: float | Cell[float], degrees_freedom1: float | Cell[float], deg
     '''Calculates the right-tailed F probability distribution (degree of diversity) for two data sets with given input x. Alternately called Fisher-Snedecor distribution or Snedecor's F distribution.'''
 
 def F_INV(probability: PercentFloat | Cell[PercentFloat], degrees_freedom1: float | Cell[float], degrees_freedom2: float | Cell[float]):
-    '''Calculates the inverse of the left-tailed F probability distribution. Also called the Fisher-Snedecor distribution or Snedecor’s F distribution.'''
+    '''Calculates the inverse of the left-tailed F probability distribution. Also called the Fisher-Snedecor distribution or Snedecorï¿½s F distribution.'''
 
 def F_INV_RT(probability: PercentFloat | Cell[PercentFloat], degrees_freedom1: float | Cell[float], degrees_freedom2: float | Cell[float]):
-    '''Calculates the inverse of the right-tailed F probability distribution. Also called the Fisher-Snedecor distribution or Snedecor’s F distribution.'''
+    '''Calculates the inverse of the right-tailed F probability distribution. Also called the Fisher-Snedecor distribution or Snedecorï¿½s F distribution.'''
 
 def F_TEST(range1: Range | Cell[Range], range2: Range | Cell[Range]):
     '''See FTEST'''
